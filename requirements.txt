@@ -2,8 +2,10 @@ streamlit
 python-dotenv
 PyPDF2
 langchain
+langchain-core
+langchain-text-splitters
+langchain-community
+langchain-google-genai
 boto3
 tiktoken
 faiss-cpu
-langchain-community
-langchain_google_genai

@@ -1,18 +1,19 @@
 import streamlit as st
 from dotenv import load_dotenv
 from PyPDF2 import PdfReader
-from langchain.text_splitter import CharacterTextSplitter
+from langchain_text_splitters import CharacterTextSplitter
 from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
 from langchain_community.vectorstores import FAISS
-from langchain.memory import ConversationBufferMemory
-from langchain.chains import ConversationalRetrievalChain
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.runnables import RunnablePassthrough
+from langchain_core.output_parsers import StrOutputParser
+from langchain_core.messages import HumanMessage, AIMessage
 from chat_ui import css, bot_template, user_template
 import boto3
 import os
+import time
+from operator import itemgetter
 
-
-# Load embeddings using Google's Gemini model
-embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
 
 def save_file_to_s3(file):
     s3 = boto3.client('s3', aws_access_key_id=os.getenv("aws_access_key"), aws_secret_access_key=os.getenv("aws_secret_access_key"))
@@ -39,49 +40,136 @@ def get_text_chunks(raw_text):
     return chunks
 
 def get_vector_store(text_chunks):
-    embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
-    vector_store = FAISS.from_texts(texts=text_chunks, embedding=embeddings)
-    return vector_store
+    """Create vector store with retry logic for rate limits."""
+    # Using text-embedding-004 (maps to Gemini Embedding 1 in API)
+    embeddings = GoogleGenerativeAIEmbeddings(model="models/text-embedding-004")
+    
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            vector_store = FAISS.from_texts(texts=text_chunks, embedding=embeddings)
+            return vector_store
+        except Exception as e:
+            if "RESOURCE_EXHAUSTED" in str(e) or "429" in str(e):
+                if attempt < max_retries - 1:
+                    wait_time = (attempt + 1) * 15  # 15, 30, 45 seconds
+                    st.warning(f"Rate limit hit. Retrying in {wait_time} seconds... (Attempt {attempt + 1}/{max_retries})")
+                    time.sleep(wait_time)
+                else:
+                    st.error("❌ **API Quota Exceeded!**")
+                    st.error("Your Google API key has reached its quota limit. Please:")
+                    st.markdown("""
+                    1. **Wait**: Quotas reset at midnight Pacific Time
+                    2. **Check Usage**: Visit https://ai.dev/rate-limit
+                    3. **Create New Key**: Get a new API key at https://makersuite.google.com/app/apikey
+                    4. **Enable Billing**: For higher quotas, enable billing in Google Cloud Console
+                    """)
+                    raise
+            else:
+                raise
 
 def get_conversation_chain(vector_store):
-    llm = ChatGoogleGenerativeAI(model="gemini-2.0-flash", convert_system_message_to_human=True)
-    memory = ConversationBufferMemory(memory_key='chat_history', return_messages=True, output_key='answer')
+    # Using gemini-2.5-flash - available in your API key with 5 RPM limit
+    # This model is newer and should have fresh quotas
+    llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", convert_system_message_to_human=True)
     retriever = vector_store.as_retriever()
-    conversation_chain = ConversationalRetrievalChain.from_llm(
-        llm=llm,
-        return_source_documents=True,
-        retriever=retriever,
-        memory=memory
+    
+    # Helper function to format documents into a single string
+    def format_docs(docs):
+        return "\n\n".join(doc.page_content for doc in docs)
+    
+    # Create a prompt template for conversational retrieval
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", "You are a helpful assistant that answers questions based on the provided context. Use the following pieces of context to answer the question at the end. If you don't know the answer, just say that you don't know, don't try to make up an answer."),
+        MessagesPlaceholder(variable_name="chat_history"),
+        ("human", "Context: {context}\n\nQuestion: {question}")
+    ])
+    
+    # Create the chain with proper input extraction
+    chain = (
+        {
+            "context": itemgetter("question") | retriever | format_docs,
+            "question": itemgetter("question"),
+            "chat_history": itemgetter("chat_history")
+        }
+        | prompt
+        | llm
+        | StrOutputParser()
     )
-
-    return conversation_chain
+    
+    return chain, retriever
 
 def handle_user_question(user_question):
     st.write("User Question: ", user_question)
-    response = st.session_state.conversation({'question': user_question})
-    print("Response: ", response)
     
-    # Separate the 'answer' and 'source_documents'
-    answer = response.get('answer', None)
-    source_documents = response.get('source_documents', None)
+    # Get the chain and retriever
+    chain = st.session_state.conversation
+    retriever = st.session_state.retriever
     
-    # Store them in Streamlit state
-    st.session_state.answer = answer
-    st.session_state.source_documents = source_documents
-    st.session_state.chat_history = response['chat_history']
+    try:
+        # Get relevant documents using modern invoke() method
+        source_documents = retriever.invoke(user_question)
+        
+        # Invoke the chain with chat history - with retry logic
+        max_retries = 2
+        for attempt in range(max_retries):
+            try:
+                answer = chain.invoke({
+                    "question": user_question,
+                    "chat_history": st.session_state.chat_history
+                })
+                break  # Success, exit retry loop
+            except Exception as e:
+                if "RESOURCE_EXHAUSTED" in str(e) or "429" in str(e):
+                    if attempt < max_retries - 1:
+                        wait_time = 5  # Wait 5 seconds before retry
+                        st.warning(f"⏳ Rate limit hit. Retrying in {wait_time} seconds...")
+                        time.sleep(wait_time)
+                    else:
+                        st.error("❌ **API Quota Exhausted!**")
+                        st.error("Your Google API key has reached its quota limit.")
+                        st.markdown("""\n**Solutions:**
+                        1. ⏰ **Wait**: Quotas reset at midnight Pacific Time
+                        2. 🔍 **Check Usage**: https://ai.dev/rate-limit
+                        3. 🔑 **New API Key**: https://makersuite.google.com/app/apikey
+                        4. 💳 **Enable Billing**: For much higher quotas
+                        5. 🕐 **Try Later**: Free tier has daily limits
+                        """)
+                        return  # Exit function without proceeding
+                else:
+                    raise  # Re-raise non-quota errors
+        
+        print("Response: ", answer)
+        
+        # Store in session state
+        st.session_state.answer = answer
+        st.session_state.source_documents = source_documents
+        
+        # Add to chat history
+        st.session_state.chat_history.append(HumanMessage(content=user_question))
+        st.session_state.chat_history.append(AIMessage(content=answer))
 
-    # Log the response
-    st.write("LLM Response: ", answer)
-    # Display source documents inside a collapsible expander
-    if source_documents:
-        with st.expander("Source Documents (Click to expand)"):
-            st.write(source_documents)
-    # Display the chat history with alternating user and bot messages
-    for i, message in enumerate(st.session_state.chat_history):
-        if i % 2 == 0:
-            st.write(user_template.replace("{{MSG}}", message.content), unsafe_allow_html=True)
-        else:
-            st.write(bot_template.replace("{{MSG}}", message.content), unsafe_allow_html=True)
+        # Log the response
+        st.write("LLM Response: ", answer)
+        
+        # Display source documents inside a collapsible expander
+        if source_documents:
+            with st.expander("Source Documents (Click to expand)"):
+                for i, doc in enumerate(source_documents):
+                    st.write(f"Document {i+1}:")
+                    st.write(doc.page_content)
+                    st.write("---")
+        
+        # Display the chat history with alternating user and bot messages
+        for i, message in enumerate(st.session_state.chat_history):
+            if isinstance(message, HumanMessage):
+                st.write(user_template.replace("{{MSG}}", message.content), unsafe_allow_html=True)
+            else:
+                st.write(bot_template.replace("{{MSG}}", message.content), unsafe_allow_html=True)
+                
+    except Exception as e:
+        st.error(f"❌ An error occurred: {str(e)}")
+        st.info("💡 Try uploading a smaller PDF or creating a new API key if quotas are exhausted.")
 
 def main():
     load_dotenv()
@@ -92,9 +180,12 @@ def main():
 
     if "conversation" not in st.session_state:
         st.session_state.conversation = None
+    
+    if "retriever" not in st.session_state:
+        st.session_state.retriever = None
 
     if "chat_history" not in st.session_state:
-        st.session_state.chat_history = None
+        st.session_state.chat_history = []
 
     # Header and input area for user question
     st.header("PDF Data analyzer - using RAG.")
@@ -117,8 +208,11 @@ def main():
                     text_chunks = get_text_chunks(raw_text)
                     vector_store = get_vector_store(text_chunks)
 
-                    st.session_state.conversation = get_conversation_chain(vector_store)
-                    print("state: ", st.session_state.conversation)
+                    chain, retriever = get_conversation_chain(vector_store)
+                    st.session_state.conversation = chain
+                    st.session_state.retriever = retriever
+                    st.session_state.chat_history = []  # Reset chat history
+                    print("Chain created successfully")
 
 if __name__ == '__main__':
     main()
