@@ -19,10 +19,10 @@ This project is ideal for anyone needing to search and retrieve information from
 
 ## Experience the live project
 
-Check out the live [Streamlit app demo](https://gemini-genai-doc-chatbot.streamlit.app/).
+Check out the live [Streamlit app demo](https://genai-pdf-data-analyzer.streamlit.app/).
 
 Project UI:
-![App Screenshot](assets/images/demo_screenshot.jpg)
+![App Screenshot](assets/images/demo_screenshot.png)
 
 ## System Design:
 ![System design Screenshot](assets/images/system_design.jpg)
@@ -32,7 +32,7 @@ Project UI:
 ### 1. Clone the Repository
 
 ```bash
-git clone git@github.com:Srikanth-Banda/PDF-Data-Analyzer.git
+git clone git@github.com:shashankbanala/PDF-Data-Analyzer.git
 cd PDF-Data-Analyzer
 ```
 

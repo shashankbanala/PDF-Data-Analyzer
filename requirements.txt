@@ -5,7 +5,7 @@ langchain
 langchain-core
 langchain-text-splitters
 langchain-community
-langchain-google-genai
+langchain-google-genai==1.0.10
 boto3
 tiktoken
 faiss-cpu

@@ -2,7 +2,8 @@ import streamlit as st
 from dotenv import load_dotenv
 from PyPDF2 import PdfReader
 from langchain_text_splitters import CharacterTextSplitter
-from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.runnables import RunnablePassthrough
@@ -41,8 +42,8 @@ def get_text_chunks(raw_text):
 
 def get_vector_store(text_chunks):
     """Create vector store with retry logic for rate limits."""
-    # Using text-embedding-004 (maps to Gemini Embedding 1 in API)
-    embeddings = GoogleGenerativeAIEmbeddings(model="models/text-embedding-004")
+    # Using HuggingFace embeddings - free and no API key needed
+    embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
     
     max_retries = 3
     for attempt in range(max_retries):
@@ -69,7 +70,7 @@ def get_vector_store(text_chunks):
                 raise
 
 def get_conversation_chain(vector_store):
-    # Using gemini-2.5-flash - available in your API key with 5 RPM limit
+    # Using gemini-2.5-flash - available in API key with 5 RPM limit
     # This model is newer and should have fresh quotas
     llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", convert_system_message_to_human=True)
     retriever = vector_store.as_retriever()
