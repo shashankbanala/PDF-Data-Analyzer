@@ -98,7 +98,3 @@ You can now access the application on `http://localhost:8501` and start interact
 ## Contributing
 
 Contributions are welcome! Please submit a pull request or open an issue to suggest improvements.
-
-## License
-
-This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for more details.
