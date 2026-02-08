@@ -6,6 +6,8 @@ langchain-core
 langchain-text-splitters
 langchain-community
 langchain-google-genai==1.0.10
+langchain-huggingface
+sentence-transformers
 boto3
 tiktoken
 faiss-cpu
